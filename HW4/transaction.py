@@ -1,6 +1,9 @@
 from Address_and_WIF import *
 from io import BytesIO
-from op import OP_CODE_FUNCTIONS, OP_CODE_NAMES
+from op import *
+from blockstream import *
+
+SIGHASH_ALL = 1
 
 def little_endian_to_int(b):
     return int.from_bytes(b, byteorder = 'little')
@@ -9,7 +12,8 @@ def int_to_little_endian(i, length):
     return i.to_bytes(length, byteorder = 'little')
 
 def read_varint(s):
-    i = s.read(1)[0]
+    i = s.read(1)
+    i = i[0]  # convert bytes to int
     if i == 0xfd:
         return little_endian_to_int(s.read(2))
     elif i == 0xfe:
@@ -30,6 +34,20 @@ def encode_varint(i):
         return b'\xff' + int_to_little_endian(i, 8)
     else:
         return ValueError(f"Integer too large: {i}")
+
+def decode_base58(s):
+    num = 0
+    for c in s:
+        num *= 58
+        num += '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'.index(c)
+    combined = num.to_bytes(25, byteorder='big')
+    checksum = combined[-4:]
+    if hash256(combined[:-4])[:4] != checksum:
+        raise ValueError("bad address: {} {}".format(checksum, hash256(combined[:-4])[:4]))
+    return combined[1:-4]
+
+def p2pkh_script(h160):
+    return Script([0x76, 0xa9, 0x14, h160, 0x88, 0xac])
 
 class Tx:
     def __init__(self, version, tx_ins, tx_outs, locktime, testnet = False):
@@ -68,6 +86,67 @@ class Tx:
         result += int_to_little_endian(self.locktime, 4)
         return result
     
+    def fee(self, testnet = False):
+        input_sum, output_sum = 0, 0
+        for tx_in in self.tx_ins:
+            input_sum += tx_in.value(testnet=testnet)
+        for tx_out in self.tx_outs:
+            output_sum += tx_out.amount
+        return input_sum - output_sum
+    
+    def sig_hash(self, input_index, redeem_script = None):
+        s = int_to_little_endian(self.version, 4)
+        s += encode_varint(len(self.tx_ins))
+        for i, tx_in in enumerate(self.tx_ins):
+            if i == input_index:
+                if redeem_script:
+                    script_sig = redeem_script
+                else:
+                    script_sig = tx_in.script_pubkey(self.testnet)
+            else:
+                script_sig = None
+            s += TxIn(prev_tx=tx_in.prev_tx,
+                          prev_index=tx_in.prev_index,
+                          script_sig= script_sig,
+                          sequence=tx_in.sequence
+                ).serialize()
+        s += encode_varint(len(self.tx_outs))
+        for tx_out in self.tx_outs:
+            s += tx_out.serialize()
+        s += int_to_little_endian(self.locktime, 4)
+        s += int_to_little_endian(1, 4)
+        h256 = hash256(s)
+        return int.from_bytes(h256, byteorder='big')
+    
+    def verify_input(self, input_index):
+        tx_in = self.tx_ins[input_index]
+        script_pubkey = tx_in.script_pubkey(self.testnet)
+        if script_pubkey.is_p2sh_script_pubkey():
+            cmd = tx_in.script_sig.cmds[-1]
+            raw_redeem = encode_varint(len(cmd)) + cmd
+            redeem_script = Script.parse(BytesIO(raw_redeem))
+        else:
+            redeem_script = None
+        z = self.sig_hash(input_index, redeem_script=redeem_script)
+        combined_script = tx_in.script_sig + script_pubkey
+        return combined_script.evaluate(z)
+    
+    def verify(self):
+        if self.fee() < 0:
+            return False
+        for i in range(len(self.tx_ins)):
+            if not self.verify_input(i):
+                return False
+        return True
+    
+    def sign_input(self, input_index, private_key):
+        z = self.sig_hash(input_index)
+        der = private_key.sign(z).DER()
+        sig = der + SIGHASH_ALL.to_bytes(1, 'big')
+        sec = private_key.point.sec()
+        self.tx_ins[input_index].script_sig = Script([sig, sec])
+        return self.verify_input(input_index)
+    
 class TxIn:
     def __init__(self, prev_tx, prev_index, script_sig = None, sequence = 0xffffffff):
         self.prev_tx = prev_tx # 32bytes byte string. last UTXO ID(result of hash256 of the previous transaction's serialization)
@@ -92,6 +171,19 @@ class TxIn:
         result += int_to_little_endian(self.prev_index, 4)
         result += self.script_sig.serialize()
         result += int_to_little_endian(self.sequence, 4)
+        return result
+    
+    def fetch_tx(self, testnet = False):
+        return TxFetcher.fetch(self.prev_tx.hex(), testnet=testnet)
+    
+    def value(self, testnet = False):
+        tx = self.fetch_tx(testnet=testnet)
+        return tx.tx_outs[self.prev_index].amount
+    
+    def script_pubkey(self, testnet = False):
+        tx = self.fetch_tx(testnet=testnet)
+        return tx.tx_outs[self.prev_index].script_pubkey
+        
 
 
 class TxOut:
@@ -108,7 +200,44 @@ class TxOut:
         result = int_to_little_endian(self.amount, 8)
         result += self.script_pubkey.serialize()
         return result
+
+class TxFetcher:
+    cache = {}
+
+    @classmethod
+    def get_url(cls, testnet = False):
+        if testnet:
+            return f'https://blockchain.info/testnet/api'
+        else:
+            return f'https://blockchain.info/api'
     
+    @classmethod
+    def fetch(cls, tx_id, testnet = False, fresh = False):
+        if fresh or (tx_id not in cls.cache):
+            url = '{}/tx/{}/hex'.format(cls.get_url(testnet), tx_id)
+            response = requests.get(url)
+            try:
+                raw = bytes.fromhex(response.text.strip())
+            except ValueError:
+                raise ValueError('unexpected response: {}'.format(response.text))
+            
+            if raw[4] == 0:
+                raw = raw[:4] + raw[6:]
+                tx = Tx.parse(BytesIO(raw), testnet=testnet)
+                tx.locktime = little_endian_to_int(raw[-4:])
+            else:
+                tx = Tx.parse(BytesIO(raw), testnet=testnet)
+        
+            if tx.id() != tx_id:
+                raise ValueError("not the same id: {} vs {}".format(tx.id(), tx_id))
+            
+            cls.cache[tx_id] = tx
+        
+        cls.cache[tx_id].testnet = testnet
+        return cls.cache[tx_id]
+
+    
+     
 
 class Script:
     def __init__(self, cmds = None):
@@ -172,6 +301,11 @@ class Script:
         total_len = len(result)
         return encode_varint(total_len) + result
     
+    def is_p2sh_script_pubkey(self):
+        return len(self.cmds) == 3 and self.cmds[0] == 0xa9\
+                    and type(self.cmds[1])  == bytes and len(self.cmds[1]) == 20\
+                    and self.cmds[2] == 0x87
+    
     def evaluate(self, z):
         cmds = self.cmds[:]
         stack = []
@@ -198,6 +332,24 @@ class Script:
                         return False
             else: # not a opcode, it's an element(e.g. signature, pubkey)
                 stack.append(cmd)
+                if len(cmds) == 3 and cmds[0] == 0xa9\
+                    and type(cmds[1])  == bytes and len(cmds[1]) == 20\
+                    and cmds[2] == 0x87:
+                    cmds.pop()
+                    h160 = cmds.pop()
+                    cmds.pop()
+
+                    if not op_hash160(stack):
+                        return False
+                    stack.append(h160)
+                    if not op_equal(stack):
+                        return False
+                    if not op_verify(stack):
+                        return False
+                    redeem_script = encode_varint(len(cmd)) + cmd
+                    stream = BytesIO(redeem_script)
+                    cmds.extend(Script.parse(stream).cmds)
+                    
         if len(stack) == 0:
             print("run length is 0")
             return False
