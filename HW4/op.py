@@ -54,6 +54,44 @@ def op_checksig(stack, z):
     stack.append(encode_num(pubkey.verify(z, sig)))
     return True
 
+def op_checkmultisig(stack, z):
+    if len(stack) < 1:
+        return False
+    n = decode_num(stack.pop())
+    if len(stack) < n + 1:
+        return False
+    sec_pubkeys = []
+    for _ in range(n):
+        sec_pubkeys.append(stack.pop())
+    m = decode_num(stack.pop())
+    if len(stack) < m + 1:
+        return False
+    der_signatures = []
+    for _ in range(m):
+        der_signatures.append(stack.pop()[:-1])  # Each DER signature is assumed to be signed with SIGHASH_ALL 
+    stack.pop()  # Take care of the off-by-one error by consuming the only remaining element of the stack and not doing anything with the element
+    try:
+        for i in range(len(sec_pubkeys)):
+            print("pubkey:", sec_pubkeys[i].hex())
+            sec_pubkeys[i] = S256Point.parse(sec_bin=sec_pubkeys[i])
+        for i in range(len(der_signatures)):
+            print("signature:", der_signatures[i].hex())
+            der_signatures[i] = Signature.parse(der_signatures[i])
+        
+        
+        pubkey_index = 0
+        for i in range(m):
+            while pubkey_index < len(sec_pubkeys) and not sec_pubkeys[pubkey_index].verify(z, der_signatures[i]):
+                pubkey_index += 1
+            if pubkey_index == len(sec_pubkeys):
+                return False
+            pubkey_index += 1
+        stack.append(encode_num(1))
+    except (ValueError, SyntaxError):
+        return False
+    return True
+
+
 def OP_IF(stack, cmds):
     pass
 
@@ -62,6 +100,10 @@ def OP_NOTIF(stack, cmds):
 
 def op_6(stack):
     stack.append(encode_num(6))
+    return True
+
+def op_1(stack):
+    stack.append(encode_num(1))
     return True
 
 def op_2(stack):
@@ -137,6 +179,8 @@ def op_0(stack):
 # OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CHECKMULTISIG, OP_CHECKMULTISIGVERIFY
     
 OP_CODE_FUNCTIONS = {
+    0: op_0,
+    81: op_1,
     82: op_2,
     86: op_6,
     118: op_dup,
@@ -146,10 +190,13 @@ OP_CODE_FUNCTIONS = {
     166: op_ripemd160,
     169: op_hash160,    
     170: op_hash256,
-    172: op_checksig
+    172: op_checksig,
+    174: op_checkmultisig
 }
 
 OP_CODE_NAMES = {
+    0: "OP_0",
+    81: "OP_1",
     82: "OP_2",
     86: "OP_6",
     118: "OP_DUP",
@@ -160,5 +207,6 @@ OP_CODE_NAMES = {
     166: "OP_RIPEMD160",
     169: "OP_HASH160",
     170: "OP_HASH256",
-    172: "OP_CHECKSIG"
+    172: "OP_CHECKSIG",
+    174: "OP_CHECKMULTISIG"
 }
