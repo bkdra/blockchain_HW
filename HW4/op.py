@@ -42,15 +42,13 @@ def op_hash160(stack):
     stack.append(h160)
     return True
 
-
-
 def op_checksig(stack, z):
     if len(stack) < 2:
         return False
     pubkey_sec = stack.pop()
     sig_der = stack.pop()
     pubkey = S256Point.parse(sec_bin=pubkey_sec)
-    sig = Signature.parse(sig_der)
+    sig = Signature.parse(sig_der[:-1])  # Remove the SIGHASH_ALL byte at the end
     stack.append(encode_num(pubkey.verify(z, sig)))
     return True
 
@@ -117,6 +115,16 @@ def op_equal(stack):
     b = stack.pop()
     stack.append(encode_num(a == b))
     return True
+
+def op_equalverify(stack):
+    if len(stack) < 2:
+        return False
+    a = stack.pop()
+    b = stack.pop()
+    if a == b:
+        return True
+    else:
+        return False  
 
 def op_add(stack):
     if len(stack) < 2:
@@ -185,6 +193,7 @@ OP_CODE_FUNCTIONS = {
     86: op_6,
     118: op_dup,
     135: op_equal,
+    136: op_equalverify,
     147: op_add,
     149: op_mul,
     166: op_ripemd160,

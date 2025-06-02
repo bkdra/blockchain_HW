@@ -1,6 +1,7 @@
 from FiniteField import *
 from EllipticCurves import *
 import hashlib
+import random
 
 gx = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 gy = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
@@ -8,6 +9,7 @@ p = 2**256 - 2**32 - 977
 N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141
 A = 0
 B = 7
+BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 
 class S256Field(FieldElement):
     def __init__(self, num, prime=None):
@@ -128,6 +130,15 @@ class PrivateKey:
             s = N - s
         return Signature(r, s)
     
+    def sign(self, z):
+        k = random.randint(0, N)
+        r = (k * G).x.num
+        k_inv = pow(k, N-2, N)
+        s = (k_inv * (z + self.secret * r)) % N
+        if s > N / 2:
+            s = N - s
+        return Signature(r, s)
+    
     def WIF(self, compressed = True, testnet = False):
         secret_bytes = self.secret.to_bytes(32, 'big')
         if testnet:
@@ -146,8 +157,6 @@ def hash256(s):
     return hashlib.sha256(hashlib.sha256(s).digest()).digest()
 
 def encode_base58(s):
-    BASE58_AKPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-
     count = 0
     for c in s:
         if c == 0:
@@ -161,11 +170,13 @@ def encode_base58(s):
 
     while num > 0:
         num, mod = divmod(num, 58)
-        result = BASE58_AKPHABET[mod] + result
+        result = BASE58_ALPHABET[mod] + result
     return prefix + result
 
 def RIPEMD160_SHA256(s):
     return hashlib.new('ripemd160', hashlib.sha256(s).digest()).digest()
+
+
 
 
 if __name__ == '__main__':

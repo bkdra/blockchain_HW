@@ -1,7 +1,7 @@
 from Address_and_WIF import *
 from io import BytesIO
 from op import *
-from blockstream import *
+import requests
 
 SIGHASH_ALL = 1
 
@@ -47,7 +47,7 @@ def decode_base58(s):
     return combined[1:-4]
 
 def p2pkh_script(h160):
-    return Script([0x76, 0xa9, 0x14, h160, 0x88, 0xac])
+    return Script([0x76, 0xa9, h160, 0x88, 0xac])
 
 class Tx:
     def __init__(self, version, tx_ins, tx_outs, locktime, testnet = False):
@@ -147,6 +147,20 @@ class Tx:
         self.tx_ins[input_index].script_sig = Script([sig, sec])
         return self.verify_input(input_index)
     
+    def __str__(self):
+        result = []
+        result.append(f"tx: {self.id()}")
+        result.append(f"version: {self.version}")
+        result.append(f"inputs:")
+        for tx_in in self.tx_ins:
+            result.append(f"  {tx_in.prev_tx.hex()}:{tx_in.prev_index}")
+            result.append(f"    script_sig: {tx_in.script_sig}")
+        result.append(f"outputs:")
+        for tx_out in self.tx_outs:
+            result.append(f"  {tx_out.amount} : {tx_out.script_pubkey}")
+        result.append(f"locktime: {self.locktime}")
+        return "\n".join(result)
+
 class TxIn:
     def __init__(self, prev_tx, prev_index, script_sig = None, sequence = 0xffffffff):
         self.prev_tx = prev_tx # 32bytes byte string. last UTXO ID(result of hash256 of the previous transaction's serialization)
@@ -213,28 +227,39 @@ class TxFetcher:
     
     @classmethod
     def fetch(cls, tx_id, testnet = False, fresh = False):
-        if fresh or (tx_id not in cls.cache):
-            url = '{}/tx/{}/hex'.format(cls.get_url(testnet), tx_id)
-            response = requests.get(url)
-            try:
-                raw = bytes.fromhex(response.text.strip())
-            except ValueError:
-                raise ValueError('unexpected response: {}'.format(response.text))
+        # if fresh or (tx_id not in cls.cache):
+        #     url = '{}/tx/{}/hex'.format(cls.get_url(testnet), tx_id)
+        #     response = requests.get(url)
+        #     try:
+        #         raw = bytes.fromhex(response.text.strip())
+        #     except ValueError:
+        #         raise ValueError('unexpected response: {}'.format(response.text))
             
-            if raw[4] == 0:
-                raw = raw[:4] + raw[6:]
-                tx = Tx.parse(BytesIO(raw), testnet=testnet)
-                tx.locktime = little_endian_to_int(raw[-4:])
-            else:
-                tx = Tx.parse(BytesIO(raw), testnet=testnet)
+            # if raw[4] == 0:
+            #     raw = raw[:4] + raw[6:]
+            #     tx = Tx.parse(BytesIO(raw), testnet=testnet)
+            #     tx.locktime = little_endian_to_int(raw[-4:])
+            # else:
+            #     tx = Tx.parse(BytesIO(raw), testnet=testnet)
         
-            if tx.id() != tx_id:
-                raise ValueError("not the same id: {} vs {}".format(tx.id(), tx_id))
+        #     if tx.id() != tx_id:
+        #         raise ValueError("not the same id: {} vs {}".format(tx.id(), tx_id))
             
-            cls.cache[tx_id] = tx
+        #     cls.cache[tx_id] = tx
         
-        cls.cache[tx_id].testnet = testnet
-        return cls.cache[tx_id]
+        # cls.cache[tx_id].testnet = testnet
+        # return cls.cache[tx_id]
+        raw = '02000000000101e65b0afdb2017c23a090f988cf06eeeea2bc28e33b5ef2b483483640b370f7cf0100000000fdffffff0320a10700000000001976a91463f903c6d008a111e6533020f60ffbfa49101f7888ac00425900000000001976a914180c37aef0a340f0377d64c742b5c88f90c8675c88ac0000000000000000196a176661756365742e746573746e6574342e6465762074786e0247304402206d3a6ffce3f20a8c7c99b642b1f60bfc47582667380a4990badbd792e0c3039e02202b433a1324eb714acb887845e050ebaa8ad98aade9c56e110ee90c520850650b01210206e6857ab2983f5fb7e1883c38c2ad6931d49f05a01f917bb564b84bab3b9dc800000000'
+        raw = bytes.fromhex(raw)
+
+        if raw[4] == 0:
+            raw = raw[:4] + raw[6:]
+            tx = Tx.parse(BytesIO(raw), testnet=testnet)
+            tx.locktime = little_endian_to_int(raw[-4:])
+        else:
+            print("run2")
+            tx = Tx.parse(BytesIO(raw), testnet=testnet)
+        return tx
 
     
      
@@ -273,6 +298,7 @@ class Script:
             else:
                 cmds.append(current_byte)
         if count != length:
+            print(f"count: {count}, length: {length}")
             raise ValueError("parsing script failed")
         return cls(cmds)
 
@@ -335,6 +361,7 @@ class Script:
                 if len(cmds) == 3 and cmds[0] == 0xa9\
                     and type(cmds[1])  == bytes and len(cmds[1]) == 20\
                     and cmds[2] == 0x87:
+                    print("run p2sh")
                     cmds.pop()
                     h160 = cmds.pop()
                     cmds.pop()
