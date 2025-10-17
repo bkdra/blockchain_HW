@@ -1,0 +1,3 @@
+本資料夾包含成果說明(HW4_report.pdf)三個部分的程式
+分別為建立交易、實作Bitcoin Script之op_checkmultisig以及交易的驗證。
+詳細的說明可見blockchain_HW(前一層資料夾)中，README對於hw4的說明以及本資料夾中的report.pdf
